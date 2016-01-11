@@ -3,10 +3,14 @@
  *
  *  Copyright 2015 Bruce Ravenel
  *
- *  Version 1.6.8e   6 Jan 2016
+ *  Version 1.6.12   10 Jan 2016
  *
  *	Version History
  *
+ *	1.6.12	10 Jan 2016		Bug fix re removing parts of a rule
+ *	1.6.11	8 Jan 2016		Added offset to compare to device, fixed bugs in compare to device
+ *	1.6.10	6 Jan 2016		Returned Delay on/off pending cancel per user request, further debug of rule evaluation
+ *	1.6.9	6 Jan 2016		Fixed bugs related to presence in triggers, add Off as disable option, fixed bug in rule evaluation
  *	1.6.8	1 Jan 2016		Added version numbers to main Rule Machine page, multi SMS
  *	1.6.7	31 Dec 2015		Added speak to send message
  *	1.6.6	30 Dec 2015		Expert multi-commands added per Maxwell
@@ -71,7 +75,7 @@ preferences {
 def selectRule() {
 	//init expert settings for rule
 	try { 
-		state.isExpert = parent.isExpert("1.6.8d") 
+		state.isExpert = parent.isExpert("1.6.12") 
 		if (state.isExpert) state.cstCmds = parent.getCommands()
 		else state.cstCmds = []
 	}
@@ -128,7 +132,8 @@ def selectRule() {
 				input "daysY", "enum", title: "Only on certain days of the week", multiple: true, required: false,
 					options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 				input "modesY", "mode", title: "Only when mode is", multiple: true, required: false            
-				input "disabled", "capability.switch", title: "Switch to disable Rule when ON", required: false, multiple: false
+				input "disabled", "capability.switch", title: "Switch to disable Rule", required: false, multiple: false, submitOnChange: true
+                if(disabled) input "disabledOff", "bool", title: "Disable when Off? On is default", required: false, defaultValue: false
 			}    
 		}
 	}
@@ -331,7 +336,16 @@ def getState(myCapab, n, isTrig) {
 	else if(myCapab in ["Temperature", "Humidity", "Illuminance", "Energy meter", "Power meter", "Battery", "Dimmer level"]) {
     	input myIsDev, "bool", title: "Relative to another device?", multiple: false, required: false, submitOnChange: true, defaultValue: false
         def myDev = settings.find {it.key == myIsDev}
-        if(myDev && myDev.value) getDevs(myCapab, myRelDev, false)
+        if(myDev && myDev.value) {
+        	getDevs(myCapab, myRelDev, false)
+			if(myCapab == "Temperature") 				result = input myState, "decimal",	title: "Temperature offset ", 	range: "*..*",		defaultValue: 0
+			else if(myCapab == "Humidity") 				result = input myState, "number", 	title: "Humidity offset", 		range: "-100..100",	defaultValue: 0
+			else if(myCapab == "Illuminance") 			result = input myState, "number", 	title: "Illuminance offset",	range: "*..*",		defaultValue: 0
+			else if(myCapab == "Dimmer level")			result = input myState, "number", 	title: "Dimmer offset", 		range: "-100..100",	defaultValue: 0
+			else if(myCapab == "Energy meter") 			result = input myState, "number", 	title: "Energy level offset",	range: "*..*",		defaultValue: 0
+			else if(myCapab == "Power meter") 			result = input myState, "number", 	title: "Power level offset", 	range: "*..*",		defaultValue: 0
+			else if(myCapab == "Battery") 				result = input myState, "number", 	title: "Battery level offset",	range: "-100..100",	defaultValue: 0
+        }
 		else if(myCapab == "Temperature") 			result = input myState, "decimal",	title: "Temperature becomes ", 	range: "*..*"
 		else if(myCapab == "Humidity") 				result = input myState, "number", 	title: "Humidity becomes", 		range: "0..100"
 		else if(myCapab == "Illuminance") 			result = input myState, "number", 	title: "Illuminance becomes",	range: "0..*"
@@ -355,6 +369,7 @@ def getState(myCapab, n, isTrig) {
     	def phrases = location.helloHome?.getPhrases()*.label
         result = input myState, "enum", title: "When this routine runs", multiple: false, required: false, options: phrases
 	}
+    def whatState = settings.find {it.key == myState}
 }
 
 def certainTime() {
@@ -489,7 +504,10 @@ def conditionLabelN(i, isTrig) {
 		if(thisCapab.value == "Physical Switch") result = result + "physical "
 		def thisState = settings.find {it.key == (isTrig ? "tstate$i" : "state$i")}
 		def thisRelDev = settings.find {it.key == (isTrig ? "reltDevice$i" : "relDevice$i")}
-		if(thisRelDev) result = result + thisRelDev.value
+		if(thisRelDev) {
+        	result = result + thisRelDev.value
+        	if(thisState) result = result + (thisState.value > 0 ? " +" : " ") + (thisState.value != 0 ? thisState.value : "")
+		}
 		else result = result + thisState.value
         if(thisCapab.value == "Presence" && thisDev.value.size() > 1 && isTrig) result = result[0..-2] 
 	}
@@ -531,7 +549,7 @@ def inputLeft(sub) {
 		inputLeftAndRight(true)
 //		input "moreConds$state.n", "bool", title: "More conditions on left?", submitOnChange: true
 //		if(settings["moreConds$state.n"]) inputRight(sub)
-//      inputRight(sub)
+//		inputRight(sub)
 	} else {
 		input "condL$state.n", "enum", title: "Which condition?", options: conds, submitOnChange: true
 		if(settings["condL$state.n"]) {
@@ -560,6 +578,15 @@ def inputRight(sub) {
 			paragraph(state.str)
 			inputLeftAndRight(true)
 			inputRight(sub)
+			if(sub) {
+				input "endOfSub$state.n", "bool", title: "End of sub-rule?", submitOnChange: true
+				if(settings["endOfSub$state.n"]) {
+					state.str = state.str + " )"
+					state.eval << ")"
+					paragraph(state.str)
+					return
+				}
+			}
 		} else {
 			input "condR$state.n", "enum", title: "Which condition?", options: conds, submitOnChange: true
 			if(settings["condR$state.n"]) {
@@ -689,9 +716,9 @@ def delayFalsePage() {
 }
 
 def selectActionsTrue() {
+	def isRule = state.isRule || state.howMany > 1
 	dynamicPage(name: "selectActionsTrue", title: "Select Actions" + (isRule ? " for True" : ""), uninstall: false) {
 		def isTrig = state.isTrig || state.howManyT > 1
-		def isRule = state.isRule || state.howMany > 1
 		state.actsTrue = ""
 		section("") {
 			href "delayTruePage", title: "Delay These Actions", description: state.delayStrTrue ? (state.delayStrTrue) : "Tap to set", state: state.delayStrTrue ? "complete" : null, submitOnChange: true
@@ -713,9 +740,9 @@ def selectActionsTrue() {
 					setActTrue(delayStrTrue)
 				}
 			}
-//            if(state.isRule || state.howMany > 1) {
+            if(state.isRule || state.howMany > 1) {
+				input "pendedOffTrue", "capability.switch", title: "Turn on/off these switches after a delay, pending cancellation (default is OFF)", multiple: true, required: false, submitOnChange: true
 				if(pendedOffTrue) {
-					input "pendedOffTrue", "capability.switch", title: "Turn on/off these switches after a delay, pending cancellation (default is OFF)", multiple: true, required: false, submitOnChange: true
 					input "pendOnOffTrue", "bool", title: "Turn ON after the delay?", multiple: false, required: false, defaultValue: false, submitOnChange: true
 					input "pendMinutesTrue", "number", title: "Minutes of delay", required: true, range: "1..*", submitOnChange: true
 					if(pendMinutesTrue) {
@@ -724,7 +751,7 @@ def selectActionsTrue() {
 						setActTrue(pendStrTrue)
 					}
 				}
-//            }
+            }
 			input "dimATrue", "capability.switchLevel", title: "Set these dimmers", multiple: true, submitOnChange: true, required: false
 			if(dimATrue) {
             	input "dimTrackTrue", "bool", title: "Track event dimmer?", required: false, submitOnChange: true
@@ -843,9 +870,7 @@ def selectActionsTrue() {
 }
 
 def selectActionsFalse() {
-	def isRule = state.howMany > 1
-	dynamicPage(name: "selectActionsFalse", title: "Select Actions" + (isRule ? " for False" : ""), uninstall: false) {
-		def isTrig = state.howManyT > 1
+	dynamicPage(name: "selectActionsFalse", title: "Select Actions for False", uninstall: false) {
 		state.actsFalse = ""
 		section("") {
 			href "delayFalsePage", title: "Delay These Actions", description: state.delayStrFalse ? (state.delayStrFalse) : "Tap to set", state: state.delayStrFalse ? "complete" : null, submitOnChange: true
@@ -867,9 +892,9 @@ def selectActionsFalse() {
 					setActFalse(delayStrFalse)
 				}
 			}
-//            if(isRule) {
+            if(state.isRule || state.howMany > 1) {
+				input "pendedOffFalse", "capability.switch", title: "Turn on/off these switches after a delay, pending cancellation (default is OFF)", multiple: true, required: false, submitOnChange: true
 				if(pendedOffFalse) {
-					input "pendedOffFalse", "capability.switch", title: "Turn on/off these switches after a delay, pending cancellation (default is OFF)", multiple: true, required: false, submitOnChange: true
 					input "pendOnOffFalse", "bool", title: "Turn ON after the delay?", multiple: false, required: false, defaultValue: false, submitOnChange: true
 					input "pendMinutesFalse", "number", title: "Minutes of delay", required: true, range: "1..*", submitOnChange: true
 					if(pendMinutesFalse) {
@@ -878,7 +903,7 @@ def selectActionsFalse() {
 						setActFalse(pendStrFalse)
 					}
 				}
-//            }
+            }
 			input "dimAFalse", "capability.switchLevel", title: "Set these dimmers", multiple: true, submitOnChange: true, required: false
 			if(dimAFalse) {
             	input "dimTrackFalse", "bool", title: "Track event dimmer?", required: false, submitOnChange: true
@@ -1154,7 +1179,8 @@ def initialize() {
 	}
 	state.success = null
 	subscribe(disabled, "switch", disabledHandler)
-	if(disabled) state.disabled = disabled.currentSwitch == "on"
+    def disOnOff = disabledOff ? "off" : "on"
+	if(disabled) state.disabled = disabled.currentSwitch == disOnOff
 	else state.disabled = false
 	if(state.isTrig || hasTrig) return
 	if(state.isRule || state.howMany > 1) runRule(true)
@@ -1164,20 +1190,22 @@ def initialize() {
 
 def compare(a, rel, b, relDev) {
 	def result = true
-	if     (rel == "=") 	result = a == (relDev ?: b)
-	else if(rel == "!=") 	result = a != (relDev ?: b)
-	else if(rel == ">") 	result = a >  (relDev ?: b)
-	else if(rel == "<") 	result = a <  (relDev ?: b)
-	else if(rel == ">=") 	result = a >= (relDev ?: b)
-	else if(rel == "<=") 	result = a <= (relDev ?: b)
+	if     (rel == "=") 	result = a == (relDev ? relDev + b : b)
+	else if(rel == "!=") 	result = a != (relDev ? relDev + b : b)
+	else if(rel == ">") 	result = a >  (relDev ? relDev + b : b)
+	else if(rel == "<") 	result = a <  (relDev ? relDev + b : b)
+	else if(rel == ">=") 	result = a >= (relDev ? relDev + b : b)
+	else if(rel == "<=") 	result = a <= (relDev ? relDev + b : b)
 	return result
 }
 
 def checkCondAny(dev, stateX, cap, rel, relDev) {
+    if(stateX == "leaves") stateX = "not present"
+    else if(stateX == "arrives") stateX = "present"
 	def result = false
-	if     (cap == "Temperature") 	dev.currentTemperature.each 	{result = result || compare(it, rel, stateX, reldev ? relDev.currentTemperature : null)}
-	else if(cap == "Humidity")	dev.currentHumidity.each    	{result = result || compare(it, rel, stateX, reldev ? relDev.currentHumidity : null)}
-	else if(cap == "Illuminance") 	dev.currentIlluminance.each 	{result = result || compare(it, rel, stateX, reldev ? relDev.currentIlluminance : null)}
+	if     (cap == "Temperature") 	dev.currentTemperature.each 	{result = result || compare(it, rel, stateX, relDev ? relDev.currentTemperature : null)}
+	else if(cap == "Humidity")	dev.currentHumidity.each    	{result = result || compare(it, rel, stateX, relDev ? relDev.currentHumidity : null)}
+	else if(cap == "Illuminance") 	dev.currentIlluminance.each 	{result = result || compare(it, rel, stateX, relDev ? relDev.currentIlluminance : null)}
 	else if(cap == "Dimmer level")	dev.currentLevel.each		{result = result || compare(it, rel, stateX, relDev ? relDev.currentLevel : null)}
 	else if(cap == "Energy meter")	dev.currentEnergy.each		{result = result || compare(it, rel, stateX, relDev ? relDev.currentEnergy : null)}
 	else if(cap == "Power meter")	dev.currentPower.each		{result = result || compare(it, rel, stateX, relDev ? relDev.currentPower : null)}
@@ -1216,16 +1244,18 @@ def checkCondAll(dev, stateX, cap, rel, relDev) {
                 "clear": "detected",
                 "present": "not present",
                 "not present": "present",
+                "leaves": "present",
+                "arrives": "not present",
                 "locked": "unlocked",
                 "unlocked": "locked"]
 	def result = true
-	if     (cap == "Temperature") 		dev.currentTemperature.each 	{result = result && compare(it, rel, stateX, reldev ? relDev.currentTemperature : null)}
-	else if(cap == "Humidity") 		dev.currentHumidity.each    	{result = result && compare(it, rel, stateX, reldev ? relDev.currentHumidity : null)}
-	else if(cap == "Illuminance") 		dev.currentIlluminance.each 	{result = result && compare(it, rel, stateX, reldev ? relDev.currentIlluminance : null)}
-	else if(cap == "Dimmer level")		dev.currentLevel.each		{result = result && compare(it, rel, stateX, reldev ? relDev.currentLevel : null)}
-	else if(cap == "Energy meter")		dev.currentEnergy.each		{result = result && compare(it, rel, stateX, reldev ? relDev.currentEnergy : null)}
-	else if(cap == "Power meter")		dev.currentPower.each		{result = result && compare(it, rel, stateX, reldev ? relDev.currentPower : null)}
-	else if(cap == "Battery")		dev.currentBattery.each		{result = result && compare(it, rel, stateX, reldev ? relDev.currentBattery : null)}
+	if     (cap == "Temperature") 		dev.currentTemperature.each 	{result = result && compare(it, rel, stateX, relDev ? relDev.currentTemperature : null)}
+	else if(cap == "Humidity") 		dev.currentHumidity.each    	{result = result && compare(it, rel, stateX, relDev ? relDev.currentHumidity : null)}
+	else if(cap == "Illuminance") 		dev.currentIlluminance.each 	{result = result && compare(it, rel, stateX, relDev ? relDev.currentIlluminance : null)}
+	else if(cap == "Dimmer level")		dev.currentLevel.each		{result = result && compare(it, rel, stateX, relDev ? relDev.currentLevel : null)}
+	else if(cap == "Energy meter")		dev.currentEnergy.each		{result = result && compare(it, rel, stateX, relDev ? relDev.currentEnergy : null)}
+	else if(cap == "Power meter")		dev.currentPower.each		{result = result && compare(it, rel, stateX, relDev ? relDev.currentPower : null)}
+	else if(cap == "Battery")		dev.currentBattery.each		{result = result && compare(it, rel, stateX, relDev ? relDev.currentBattery : null)}
 	else if(cap == "Rule truth")		dev.each {
     							def rule = null
     							if(it == state.ourRule) rule = state.ourTruth
@@ -1251,7 +1281,7 @@ def getOperand(i, isR) {
 	def result = true
     def foundItem = (settings.find {it.key == (isR ? "rCapab$i" : "tCapab$i")})
     if (foundItem == null) {
-        log.info "Cannot get operand for i: $i   isR: $isR"
+//        log.info "Cannot get operand for i: $i   isR: $isR"
         return null
     }
 	def capab = (settings.find {it.key == (isR ? "rCapab$i" : "tCapab$i")}).value
@@ -1267,11 +1297,11 @@ def getOperand(i, isR) {
 		def myRelDev =  settings.find {it.key == (isR ? "relDevice$i" : "reltDevice$i")}
         if(!myDev) return false
 		if(myAll) {
-			if(myAll.value) result = checkCondAll(myDev.value, myState ? myState.value : null, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : null)
-			else result = checkCondAny(myDev.value, myState ? myState.value : null, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : null)
-		} else result = checkCondAny(myDev.value, myState ? myState.value : null, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : null)
+			if(myAll.value) result = checkCondAll(myDev.value, myState ? myState.value : 0, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : 0)
+			else result = checkCondAny(myDev.value, myState ? myState.value : 0, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : 0)
+		} else result = checkCondAny(myDev.value, myState ? myState.value : 0, capab, myRel ? myRel.value : 0, myRelDev ? myRelDev.value : 0)
 	}
-//    log.debug "operand is $result"
+//    log.debug "operand $i is $result"
 	return result
 }
 
@@ -1288,18 +1318,14 @@ def findRParen() {
 }
 
 def disEval() {
-	if(state.eval[state.token] == "(") {
-		state.parenLev = 0
-		findRParen()
-	}
-	if(state.token >= state.eval.size) return
-	state.token = state.token + 1
+    state.parenLev = 0
+    findRParen()
 }
 
 def evalTerm() {
 	def result = true
 	def thisTok = state.eval[state.token]
-	if (thisTok == "(") {
+	if(thisTok == "(") {
 		state.token = state.token + 1
 		result = eval()
 	} else result = getOperand(thisTok, true)
@@ -1308,7 +1334,7 @@ def evalTerm() {
 }
 
 def eval() {
-	def result = evalTerm()
+    def result = evalTerm()
 	while(true) {
 		if(state.token >= state.eval.size) return result
 		def thisTok = state.eval[state.token]
@@ -1373,7 +1399,7 @@ def dimToggle(devices, dimLevel, trufal) {
 def dimAdjust(devices, dimLevel, trufal) {
 //	log.debug "dimAdjust: $devices = ${devices*.currentValue('level')}"
 	def del = trufal ? delayMilTrue : delayMilFalse
-    devices.each { if(del) it.setLevel(it.currentLevel + dimLevel, [delay: del]) else devices.setLevel(it.currentLevel + dimLevel) }
+    devices.each { if(del) it.setLevel(it.currentLevel + dimLevel, [delay: del]) else it.setLevel(it.currentLevel + dimLevel) }
 }
 
 def sendSmsMulti(phone, msg) {
@@ -1420,12 +1446,12 @@ def takeAction(success) {
 								if(delayMillisTrue) {if(delayOnOffTrue) delayedOffTrue.on([delay: delayMillisTrue]) else delayedOffTrue.off([delay: delayMillisTrue])}   }
 		if(pendedOffTrue)		runIn(pendMinutesTrue * 60, pendingOffTrue)
 		if(pendedOffFalse)		unschedule(pendingOffFalse)
-        if(dimTrackTrue)		if(state.lastEvtLevel != null) {if(delayMilTrue) dimATrue.setLevel(state.lastEvtLevel, [delay: delayMilTrue]) else dimATrue.setLevel(state.lastEvtLevel)}
-		if(dimATrue) 			if(delayMilTrue) dimATrue.setLevel(dimLATrue, [delay: delayMilTrue]) else dimATrue.setLevel(dimLATrue)
-		if(dimBTrue) 			if(delayMilTrue) dimBTrue.setLevel(dimLBTrue, [delay: delayMilTrue]) else dimBTrue.setLevel(dimLBTrue)
-		if(toggleDimmerTrue)	dimToggle(toggleDimmerTrue, dimTogTrue, true)
-        if(adjustDimmerTrue)	dimAdjust(adjustDimmerTrue, dimAdjTrue, true)
-		if(ctTrue)   			ctTrue.setColorTemperature(ctLTrue)
+        if(dimTrackTrue && dimATrue) if(state.lastEvtLevel != null) {if(delayMilTrue) dimATrue.setLevel(state.lastEvtLevel, [delay: delayMilTrue]) else dimATrue.setLevel(state.lastEvtLevel)}
+		if(dimATrue && dimLATrue) if(delayMilTrue) dimATrue.setLevel(dimLATrue, [delay: delayMilTrue]) else dimATrue.setLevel(dimLATrue)
+		if(dimBTrue && dimLBTrue) if(delayMilTrue) dimBTrue.setLevel(dimLBTrue, [delay: delayMilTrue]) else dimBTrue.setLevel(dimLBTrue)
+		if(toggleDimmerTrue && dimTogTrue)	dimToggle(toggleDimmerTrue, dimTogTrue, true)
+        if(adjustDimmerTrue && dimAdjTrue)	dimAdjust(adjustDimmerTrue, dimAdjTrue, true)
+		if(ctTrue && ctLTrue)   			ctTrue.setColorTemperature(ctLTrue)
 		if(bulbsTrue)			setColor(true)
 		if(garageOpenTrue)		if(delayMilTrue) garageOpenTrue.open([delay: delayMilTrue]) else garageOpenTrue.open()
 		if(garageCloseTrue)		if(delayMilTrue) garageCloseTrue.close([delay: delayMilTrue]) else garageCloseTrue.close()
@@ -1456,11 +1482,11 @@ def takeAction(success) {
                 				if(delayMillisFalse) {if(delayOnOffFalse) delayedOffFalse.on([delay: delayMillisFalse]) else delayedOffFalse.off([delay: delayMillisFalse])}   }
 		if(pendedOffFalse)		runIn(pendMinutesFalse * 60, pendingOffFalse)
 		if(pendedOffTrue)		unschedule(pendingOffTrue)
-        if(dimTrackFalse)		if(state.lastEvtLevel != null) {if(delayMilFalse) dimAFalse.setLevel(state.lastEvtLevel, [delay: delayMilFalse]) else dimAFalse.setLevel(state.lastEvtLevel)}
-		if(dimAFalse) 			if(delayMilFalse) dimAFalse.setLevel(dimLAFalse, [delay: delayMilFalse]) else dimAFalse.setLevel(dimLAFalse)
-		if(dimBFalse) 			if(delayMilFalse) dimBFalse.setLevel(dimLBFalse, [delay: delayMilFalse]) else dimBFalse.setLevel(dimLBFalse)
-		if(toggleDimmerFalse)	dimToggle(toggleDimmerFalse, dimTogFalse, false)
-        if(adjustDimmerFalse)	dimAdjust(adjustDimmerFalse, dimAdjFalse, false)
+        if(dimTrackFalse && dimAFalse) if(state.lastEvtLevel != null) {if(delayMilFalse) dimAFalse.setLevel(state.lastEvtLevel, [delay: delayMilFalse]) else dimAFalse.setLevel(state.lastEvtLevel)}
+		if(dimAFalse && dimLAFalse) if(delayMilFalse) dimAFalse.setLevel(dimLAFalse, [delay: delayMilFalse]) else dimAFalse.setLevel(dimLAFalse)
+		if(dimBFalse && dimLBFalse) if(delayMilFalse) dimBFalse.setLevel(dimLBFalse, [delay: delayMilFalse]) else dimBFalse.setLevel(dimLBFalse)
+		if(toggleDimmerFalse && dimTogFalse) dimToggle(toggleDimmerFalse, dimTogFalse, false)
+        if(adjustDimmerFalse && dimAdjFalse) dimAdjust(adjustDimmerFalse, dimAdjFalse, false)
 		if(ctFalse)   			ctFalse.setColorTemperature(ctLFalse)
 		if(bulbsFalse)			setColor(false)
 		if(garageOpenFalse)		if(delayMilFalse) garageOpenFalse.open([delay: delayMilFalse]) else garageOpenFalse.open()
@@ -1566,8 +1592,8 @@ def testEvt(evt) {
         return false
 	}
 	for(int i = 1; i < howMany; i++) {
-		def myDev = (settings.find {it.key == (state.isTrig ? "rDev$i" : "tDev$i")}).value
-		myDev.each {if(evt.displayName == it.displayName) {
+		def myDev = settings.find {it.key == (state.isTrig ? "rDev$i" : "tDev$i")}
+		if(myDev) myDev.value.each {if(evt.displayName == it.displayName) {
 			if(evt.name == "button") result = getButton(myDev, evt, i)
 			else result = getOperand(i, state.isTrig)}
 		}
@@ -1585,11 +1611,11 @@ def allHandler(evt) {
 	def hasCond = state.howMany > 1
 	def doit = true
 	if(state.isTrig) {
-		if(evt.name in ["temperature", "humidity", "power", "energy", "battery", "illuminance", "mode", "button", "routineExecuted", "level"]) doit = testEvt(evt)
+		if(evt.name in ["temperature", "humidity", "power", "energy", "battery", "illuminance", "mode", "button", "routineExecuted", "level", "presence"]) doit = testEvt(evt)
 		if (doit) doTrigger() }
 	else if(state.isRule) runRule(false)
 	else {
-		if(hasTrig) if(evt.name in ["temperature", "humidity", "power", "energy", "battery", "illuminance", "mode", "button", "routineExecuted", "level"]) doit = testEvt(evt)
+		if(hasTrig) if(evt.name in ["temperature", "humidity", "power", "energy", "battery", "illuminance", "mode", "button", "routineExecuted", "level", "presence"]) doit = testEvt(evt)
 		if(hasCond) {if(doit) runRule(hasTrig)}
 		else if(doit) doTrigger()
 	}
@@ -1645,7 +1671,8 @@ def delayRuleFalseForce() {
 }
 
 def disabledHandler(evt) {
-	state.disabled = evt.value == "on"
+	def disOnOff = disabledOff ? "off" : "on"
+	state.disabled = evt.value == disOnOff
 }
 
 def ruleHandler(rule, truth) {
